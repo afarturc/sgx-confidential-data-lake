@@ -1,24 +1,24 @@
-# Como correr o SAHC
+# Running SAHC
 
-Guia único para pôr o protótipo a funcionar. Linear, copy-paste.
+The single guide to getting the prototype up. Linear, copy-paste.
 
-- Para correr **localmente sem hardware SGX** → segue da §1 à §5.
-- Para correr em **Intel HW real** → vai directo a [`HW.md`](HW.md).
+- To run **locally, without SGX hardware** → follow §1 through §5.
+- To run on **real Intel hardware** → go straight to [`HW.md`](HW.md).
 
 ---
 
-## 1. Pré-requisitos
+## 1. Prerequisites
 
 Debian 13 / Ubuntu 22+:
 
 ```bash
-# Toolchain + libs
-sudo apt install build-essential git python3 libssl-dev curl
+# Toolchain and libraries
+sudo apt install build-essential git python3 python3-cryptography libssl-dev curl
 
-# Intel SGX SDK (modo simulação) — instala em /opt/intel/sgxsdk
-# https://github.com/intel/linux-sgx (instalador .bin "for Linux")
+# Intel SGX SDK (simulation mode) — installs into /opt/intel/sgxsdk
+# https://github.com/intel/linux-sgx ("for Linux" .bin installer)
 
-# Gramine 1.9 — apenas se vais usar o caminho gramine_server
+# Gramine 1.9 — only needed for the gramine_server path
 sudo curl -fsSLo /etc/apt/keyrings/gramine.asc \
     https://packages.gramineproject.io/gramine-keyring.gpg
 echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/gramine.asc] \
@@ -27,76 +27,89 @@ echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/gramine.asc] \
 sudo apt update && sudo apt install gramine
 ```
 
-Verificar:
+Check:
 ```bash
-ls /opt/intel/sgxsdk/environment      # tem de existir
-gramine-direct --version              # qualquer 1.9.x
+ls /opt/intel/sgxsdk/environment      # must exist
+gramine-direct --version              # any 1.9.x
 ```
 
-## 2. Clonar e setup inicial
+## 2. Clone and first-time setup
 
 ```bash
-git clone <repo-url> sahc && cd sahc
+git clone https://github.com/afarturc/sahc-project.git sahc && cd sahc
 source /opt/intel/sgxsdk/environment
 
-# DuckDB (~57 MB, vai para Common/third_party/duckdb/, gitignored)
+# DuckDB (~57 MB, lands in Common/third_party/duckdb/, gitignored)
 ./scripts/fetch_duckdb.sh
 
-# Identidades + authorized_parties.json (uma vez por checkout)
+# Identities + authorized_parties.json (once per checkout)
 python3 scripts/gen_identity.py hosp-santa-maria
 python3 scripts/gen_identity.py hosp-sao-joao
 python3 scripts/gen_identity.py hosp-santo-antonio
 python3 scripts/gen_identity.py fcup-research
-python3 scripts/build_authorized_parties.py
+
+# three founder hospitals, one researcher admitted on a 2-of-3 quorum;
+# the script prints the document, so redirect it to the repository root
+python3 scripts/build_authorized_parties.py --quorum 2 \
+    --hospital hosp-santa-maria \
+    --hospital hosp-sao-joao \
+    --hospital hosp-santo-antonio \
+    --researcher fcup-research \
+    --signed-by hosp-santa-maria \
+    --signed-by hosp-sao-joao \
+    > authorized_parties.json
 ```
 
-Depois deste passo: `parties/*.{key,pub}` existem e
-`authorized_parties.json` está na raiz.
+After this step `parties/*.{key,pub}` exist and `authorized_parties.json`
+sits at the repository root. The `.key` files are the long-term private
+keys — they are gitignored and must stay that way. The version of
+`authorized_parties.json` tracked in the repository is only an example of
+the format; regenerating it as above overwrites it with keys you hold.
 
-## 3. Build (modo simulação — sem hardware)
+## 3. Build (simulation mode — no hardware)
 
-Há **dois caminhos de servidor** que partilham o cliente. Escolhe um
-ou compila ambos:
+There are **two server paths** sharing one client. Pick one, or build
+both:
 
 ```bash
-# Caminho A — SGX-SDK (enclave clássico, motor de query artesanal)
+# Path A — SGX SDK (classic enclave, hand-rolled query engine)
 make sgx_server sgx_client
 
-# Caminho B — Gramine + DuckDB (recomendado: SQL real)
+# Path B — Gramine + DuckDB (recommended: real SQL)
 make gramine_server gramine_manifest
 ```
 
-Para limpar tudo: `make clean`.
+To wipe everything: `make clean`.
 
-## 4. Correr
+## 4. Running
 
-### 4.A — Caminho SGX-SDK
+### 4.A — SGX SDK path
 
 Terminal 1:
 ```bash
-./sgx_server                              # 127.0.0.1:7878 por defeito
+./sgx_server                              # 127.0.0.1:7878 by default
 ```
 
 Terminal 2:
 ```bash
-# Upload (3 hospitais, 5 records cada → 15 totais)
+# Upload (3 hospitals, 14 records total)
 ./sgx_client 127.0.0.1 7878 hosp-santa-maria   data/hospital_0.csv
 ./sgx_client 127.0.0.1 7878 hosp-sao-joao      data/hospital_1.csv
 ./sgx_client 127.0.0.1 7878 hosp-santo-antonio data/hospital_2.csv
 
-# Query agregada (researcher)
+# Aggregate query (researcher)
 ./sgx_client 127.0.0.1 7878 fcup-research - age avg any
 ```
 
-### 4.B — Caminho Gramine
+### 4.B — Gramine path
 
 Terminal 1:
 ```bash
-gramine-direct gramine_server             # 0.0.0.0:7878 por defeito
+gramine-direct gramine_server             # 0.0.0.0:7878 by default
 ```
 
-Terminal 2 — em `gramine-direct` o MRENCLAVE é placeholder, então
-desactiva-se o pin com `SAHC_EXPECTED_MRENCLAVE=''`:
+Terminal 2 — under `gramine-direct` the MRENCLAVE is a placeholder, so
+the pin has to be disabled with `SAHC_EXPECTED_MRENCLAVE=''`:
 ```bash
 SAHC_EXPECTED_MRENCLAVE='' ./sgx_client 127.0.0.1 7878 hosp-santa-maria   data/hospital_0.csv
 SAHC_EXPECTED_MRENCLAVE='' ./sgx_client 127.0.0.1 7878 hosp-sao-joao      data/hospital_1.csv
@@ -104,69 +117,79 @@ SAHC_EXPECTED_MRENCLAVE='' ./sgx_client 127.0.0.1 7878 hosp-santo-antonio data/h
 SAHC_EXPECTED_MRENCLAVE='' ./sgx_client 127.0.0.1 7878 fcup-research - age avg any
 ```
 
-### 4.C — Modo REPL (qualquer caminho)
+### 4.C — REPL mode (either path)
 
-Sem args extra, o cliente entra em REPL:
+With no extra arguments the client drops into a REPL:
 ```bash
 ./sgx_client 127.0.0.1 7878 fcup-research
-sahc> upload data/hospital_0.csv          # apenas roles HOSPITAL
+sahc> upload data/hospital_0.csv          # HOSPITAL roles only
 sahc> query age avg diabetes
 sahc> query temperature max any
 sahc> help
 sahc> quit
 ```
 
-Comandos:
+Commands:
 - `upload <csv_path>`
 - `query <field> <op> [diag]`
   - `field`: `age` | `temperature` | `blood_sugar`
   - `op`: `avg` | `min` | `max` | `count`
   - `diag`: `any` | `healthy` | `diabetes` | `hypertension` | `infection`
 
-## 5. O que esperar
+## 5. What to expect
 
-Smoke saudável (com 3 hospitais carregados):
+A healthy smoke run (with all three hospitals loaded, 14 records total):
 
-| Comando                                      | Resultado esperado                       |
-|----------------------------------------------|------------------------------------------|
-| `query age avg any`                          | `result=49.143 matched=15 applied_k=5`   |
-| `query temperature max any`                  | `result=39.2 matched=15 applied_k=5`     |
-| `query blood_sugar avg diabetes`             | resultado >0, `matched≥5`                |
-| `query age avg pneumonia` (diag inexistente) | `E_INSUFFICIENT_RECORDS` (k<5)           |
+| Command                            | Expected result                          |
+|------------------------------------|------------------------------------------|
+| `query age avg any`                | `result=49.143 matched=14 applied_k=5`   |
+| `query temperature max any`        | `result=39.000 matched=14 applied_k=5`   |
+| `query age count any`              | `result=14.000 matched=14 applied_k=5`   |
+| `query blood_sugar avg diabetes`   | `refused — below k-anonymity threshold`  |
 
-O servidor imprime no log: `state persisted (22844 bytes)` após cada
-upload (sealing). Reinício do servidor sem apagar `data/sealed/state.bin`
-mantém os records — entrar logo a fazer queries deve devolver os
-mesmos números sem re-upload.
+That last row is the k-anonymity guard doing its job, not a failure: the
+tracked sample set has at most 4 records per diagnosis, so **every**
+filtered query over it falls below `K_ANON_THRESHOLD` (5). Load a larger
+dataset to see filtered aggregates come back with a result.
 
-## 6. Hardware Intel real
+The server logs `Enclave: state sealed` (and `Server: state persisted
+(N bytes)`) after each upload — that is the sealing step. Restarting the
+server *without* deleting `data/sealed/state.bin` logs
+`Enclave: state unsealed` and keeps the records: querying straight away
+returns the same numbers with no re-upload.
 
-Se tens uma máquina com SGX habilitado e queres correr DCAP a sério
-(não simulado), **não** sigas as secções 3-5 acima. Vai directo a
-[`HW.md`](HW.md) — cobre setup, build, testes esperados, bench e
-troubleshooting num único documento.
+## 6. Real Intel hardware
 
-## 7. Troubleshooting rápido
+On a machine with SGX enabled, to run DCAP for real rather than
+simulated, do **not** follow sections 3-5 above. Go straight to
+[`HW.md`](HW.md), which covers setup, build, expected test outcomes,
+benchmarks and troubleshooting in one document.
 
-| Sintoma                                                  | Solução                                                              |
-|----------------------------------------------------------|----------------------------------------------------------------------|
-| `bash: ./sgx_client: No such file or directory`          | falta `make sgx_client`                                              |
-| `tcp_listen: invalid host 7878`                          | passaste só a porta — args são `[host] [port]`                       |
-| `quote_verify: MRENCLAVE mismatch`                       | em `gramine-direct` precisas de `SAHC_EXPECTED_MRENCLAVE=''`         |
-| `unseal failed` ao arrancar servidor                     | trocaste de backend (SDK↔Gramine) — `rm data/sealed/state.bin`       |
-| `fetch_duckdb.sh: ... not found`                         | correr `chmod +x scripts/*.sh` se vier sem permissões                |
-| `fatal error: sgx_dcap_quoteverify.h`                    | só relevante para build HW; em SIM ignorar (não chega a esse path)   |
-| `gramine-direct: command not found`                      | falta o passo Gramine na §1                                          |
-| Build falha por `_GLIBCXX_USE_CXX11_ABI`                 | distro com libstdc++ muito antiga; usa Debian 13/Ubuntu 22+          |
+## 7. Quick troubleshooting
+
+| Symptom                                                  | Fix                                                                   |
+|----------------------------------------------------------|-----------------------------------------------------------------------|
+| `bash: ./sgx_client: No such file or directory`          | `make sgx_client` was not run                                         |
+| `tcp_listen: invalid host 7878`                          | only the port was passed — arguments are `[host] [port]`              |
+| `quote_verify: MRENCLAVE mismatch`                       | under `gramine-direct` you need `SAHC_EXPECTED_MRENCLAVE=''`          |
+| `unseal failed` on server start                          | backend was switched (SDK↔Gramine) — `rm data/sealed/state.bin`       |
+| `fetch_duckdb.sh: ... not found`                         | run `chmod +x scripts/*.sh` if the scripts lost their exec bit        |
+| `fatal error: sgx_dcap_quoteverify.h`                    | only relevant to HW builds; harmless in SIM (that path is never hit)  |
+| `gramine-direct: command not found`                      | the Gramine step in §1 was skipped                                    |
+| Build fails on `_GLIBCXX_USE_CXX11_ABI`                  | libstdc++ too old; use Debian 13 / Ubuntu 22+                         |
 
 ## 8. Datasets
 
-`data/hospital_{0,1,2}.csv` — 5 records cada, mock data.
+`data/hospital_{0,1,2}.csv` — 5, 5 and 4 synthetic records, 14 in total.
+Diagnosis counts across the set: 3 healthy, 4 diabetes, 3 hypertension,
+4 infection — all below the k-anonymity threshold by design, so filtered
+queries are refused unless you supply more data.
 
-Formato:
+Format:
 ```csv
 patient_id,age,temperature,blood_sugar,diagnosis
 1001,45,36.5,95.0,1
 ```
 
-Códigos de `diagnosis`: `0` healthy, `1` diabetes, `2` hypertension, `3` infection.
+`diagnosis` codes: `0` healthy, `1` diabetes, `2` hypertension,
+`3` infection.

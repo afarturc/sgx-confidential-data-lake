@@ -1,12 +1,12 @@
-# Setup do zero numa VM Azure DCsv3 (Intel SGX)
+# Provisioning an Azure DCsv3 VM (Intel SGX) from scratch
 
-Guião sequencial para preparar uma VM `Standard_DC*s_v3` (Ice Lake-SP
-com SGX). Cada comando numa única linha — copy-paste directo. Para
-validação fim-a-fim ver [`HW.md`](HW.md).
+A sequential runbook for preparing a `Standard_DC*s_v3` VM (Ice Lake-SP
+with SGX). One command per block, copy-paste directly. For the end-to-end
+validation plan see [`HW.md`](HW.md).
 
 ---
 
-## 0. Validar SGX vivo
+## 0. Check that SGX is alive
 
 ```
 lscpu | grep 'Model name'
@@ -21,11 +21,11 @@ ls -l /dev/sgx_enclave /dev/sgx_provision
 sudo dmesg | grep -i sgx | head -5
 ```
 
-Esperado: Xeon Platinum 83xx, flag `sgx`, ambos os device nodes
-existem, EPC ≥ 168 MiB. Se vendor for `AuthenticAMD` ou cpuinfo sem
-`sgx` → tamanho de VM errado, recriar como `DC*s_v3` (Intel).
+Expected: a Xeon Platinum 83xx, the `sgx` flag, both device nodes
+present, EPC ≥ 168 MiB. If the vendor is `AuthenticAMD` or cpuinfo has no
+`sgx`, the VM size is wrong — recreate it as `DC*s_v3` (Intel).
 
-## 1. Repo Intel SGX (assinatura GPG)
+## 1. Intel SGX repository (GPG signed)
 
 ```
 sudo rm -f /usr/share/keyrings/intel-sgx.gpg /etc/apt/sources.list.d/intel-sgx.list
@@ -40,27 +40,27 @@ echo "deb [arch=amd64 signed-by=/usr/share/keyrings/intel-sgx.gpg] https://downl
 sudo apt update
 ```
 
-`apt update` tem de mostrar `Get: ... intel-sgx ...` **sem** erro de GPG.
-Se der `NO_PUBKEY`, importar a chave do keyserver:
+`apt update` must show `Get: ... intel-sgx ...` **without** a GPG error.
+On `NO_PUBKEY`, import the key from a keyserver:
 ```
 sudo gpg --no-default-keyring --keyring /usr/share/keyrings/intel-sgx.gpg --keyserver keyserver.ubuntu.com --recv-keys E5C7F0FA1C6C6C3C
 ```
 
-## 2. Stack SGX userspace + DCAP
+## 2. SGX userspace stack + DCAP
 
 ```
 sudo apt install -y libsgx-urts libsgx-dcap-ql libsgx-dcap-default-qpl libsgx-dcap-quote-verify-dev libsgx-quote-ex sgx-aesm-service libsgx-aesm-quote-ex-plugin libsgx-aesm-ecdsa-plugin libsgx-ae-qe3 libsgx-ae-qve
 ```
 
-Validar:
+Validate:
 ```
 sudo systemctl status aesmd --no-pager | head -5
 ```
 ```
 cat /etc/sgx_default_qcnl.conf
 ```
-Esperado: `aesmd` active (running); URL do PCCS Azure
-(`acccache.azure.net`) já configurado.
+Expected: `aesmd` active (running), and the Azure PCCS URL
+(`acccache.azure.net`) already configured.
 
 ## 3. SGX SDK
 
@@ -101,7 +101,7 @@ gramine-sgx --version
 gramine-sgx-gen-private-key
 ```
 
-## 5. Permissões SGX
+## 5. SGX permissions
 
 ```
 sudo usermod -aG sgx_prv $USER
@@ -113,13 +113,19 @@ newgrp sgx_prv
 groups | grep sgx_prv
 ```
 
-## 6. Trazer o repo (correr na máquina LOCAL)
+## 6. Get the repository onto the VM
 
 ```
-rsync -av --exclude='.git' --exclude='build/' --exclude='*.o' ~/Documents/MSI/2S/SAHC/Project/ azureuser@<IP-VM>:~/sahc/
+git clone https://github.com/afarturc/sahc-project.git ~/sahc
 ```
 
-## 7. Build (na VM)
+To push local work in progress instead of cloning, rsync from your
+machine:
+```
+rsync -av --exclude='.git' --exclude='*.o' <local-repo-path>/ azureuser@<VM-IP>:~/sahc/
+```
+
+## 7. Build (on the VM)
 
 ```
 cd ~/sahc && source /opt/intel/sgxsdk/environment
@@ -128,10 +134,10 @@ cd ~/sahc && source /opt/intel/sgxsdk/environment
 ./scripts/fetch_duckdb.sh
 ```
 ```
-./scripts/gen_identity.py
+for p in hosp-santa-maria hosp-sao-joao hosp-santo-antonio fcup-research; do python3 scripts/gen_identity.py "$p"; done
 ```
 ```
-./scripts/build_authorized_parties.py
+python3 scripts/build_authorized_parties.py --quorum 2 --hospital hosp-santa-maria --hospital hosp-sao-joao --hospital hosp-santo-antonio --researcher fcup-research --signed-by hosp-santa-maria --signed-by hosp-sao-joao > authorized_parties.json
 ```
 ```
 make clean
@@ -139,12 +145,13 @@ make clean
 ```
 make hw
 ```
-`make hw` faz tudo na ordem certa: enclave SDK + manifest Gramine assinado +
-extracção automática do MRENCLAVE Gramine + cliente linkado contra esse pin.
+`make hw` does everything in the right order: SDK enclave, signed Gramine
+manifest, automatic extraction of the Gramine MRENCLAVE, and a client
+linked against that pin.
 
 ## 8. Smoke test
 
-Servidor numa sessão `tmux`:
+Server, in a `tmux` session:
 ```
 tmux new -s sahc
 ```
@@ -154,16 +161,16 @@ rm -f data/sealed/state.bin
 ```
 gramine-sgx gramine_server 127.0.0.1 7878
 ```
-Detach: `Ctrl-B` depois `D`.
+Detach with `Ctrl-B` then `D`.
 
-Notas Azure DCsv3 (uma vez por sessão SSH):
+Azure DCsv3 note (once per SSH session):
 ```
 export AZDCAP_COLLATERAL_VERSION=v3
 ```
-A QvL Intel ainda não aceita `v4` que a Azure devolve por defeito —
-`v3` resolve o `sgx_qv_verify_quote 0xe03a`.
+Intel's QvL does not yet accept the `v4` collateral Azure returns by
+default; `v3` resolves the `sgx_qv_verify_quote 0xe03a` failure.
 
-Cliente noutra sessão SSH:
+Client, in another SSH session:
 ```
 SAHC_REQUIRE_DCAP=1 ./sgx_client 127.0.0.1 7878 hosp-santa-maria data/hospital_0.csv
 ```
@@ -177,19 +184,19 @@ SAHC_REQUIRE_DCAP=1 ./sgx_client 127.0.0.1 7878 hosp-santo-antonio data/hospital
 SAHC_REQUIRE_DCAP=1 ./sgx_client 127.0.0.1 7878 fcup-research - age avg any
 ```
 
-Esperado em cada cliente: `quote_verify: DCAP chain OK + binding OK +
-MRENCLAVE pin OK`. Query final: `result=49.143 matched=14 applied_k=5`.
+Expected from every client: `quote_verify: DCAP chain OK + binding OK +
+MRENCLAVE pin OK`. Final query: `result=49.143 matched=14 applied_k=5`.
 
-A partir daqui seguir [`HW.md`](HW.md) §B.3 (negativos), §B.5
-(persistência), §6 (bench).
+From here follow [`HW.md`](HW.md) §B.3 (negative tests), §B.5
+(persistence) and §6 (benchmarks).
 
-## 9. Quando paras de trabalhar
+## 9. When you stop working
 
-Stop-deallocate (na máquina LOCAL) para parar a faturação:
+Stop-deallocate (from your local machine) to stop billing:
 ```
 az vm deallocate -g <resource-group> -n <vm-name>
 ```
-Retomar:
+Resume:
 ```
 az vm start -g <resource-group> -n <vm-name>
 ```

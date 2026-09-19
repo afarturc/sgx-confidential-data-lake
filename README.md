@@ -201,7 +201,16 @@ source /opt/intel/sgxsdk/environment
 for p in hosp-santa-maria hosp-sao-joao hosp-santo-antonio fcup-research; do
     python3 scripts/gen_identity.py "$p"       # writes parties/<id>.{key,pub}
 done
-python3 scripts/build_authorized_parties.py
+
+# three founder hospitals, one researcher admitted on a 2-of-3 quorum
+python3 scripts/build_authorized_parties.py --quorum 2 \
+    --hospital hosp-santa-maria \
+    --hospital hosp-sao-joao \
+    --hospital hosp-santo-antonio \
+    --researcher fcup-research \
+    --signed-by hosp-santa-maria \
+    --signed-by hosp-sao-joao \
+    > authorized_parties.json
 
 make gramine_server gramine_manifest           # or: make sgx_server sgx_client
 ```
@@ -243,6 +252,13 @@ its own record sets.
 | Attestation | Intel DCAP, real on the Gramine path under `SAHC_HW=1` |
 | Transport | Raw TCP with a 5-byte header, AEAD frames after key exchange |
 | Build | GNU Make, `sgx_edger8r`, `sgx_sign` |
+
+## Security
+
+This is an academic prototype: real cryptography and real attestation,
+but unaudited, and not built to hold real patient data. The gaps that
+matter to anyone reusing the code are spelled out in
+[`SECURITY.md`](SECURITY.md).
 
 ## License
 

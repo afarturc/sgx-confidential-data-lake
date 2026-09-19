@@ -1,114 +1,129 @@
-# Correr e validar em hardware Intel SGX
+# Running and validating on Intel SGX hardware
 
-Setup, build, testes esperados, bench e troubleshooting para correr o
-protótipo numa máquina com Intel SGX habilitado. O caminho DCAP nunca
-correu fim-a-fim contra um quoting enclave real durante o
-desenvolvimento — este guia é deliberadamente determinístico para que
-qualquer falha seja fácil de isolar entre bug de código e problema de
-setup.
+Setup, build, expected test outcomes, benchmarks and troubleshooting for
+running the prototype on a machine with Intel SGX enabled.
+
+This is the test plan that was actually executed against real hardware:
+the DCAP path was validated end to end on an Azure `Standard_DC2s_v3`
+(Ice Lake-SP, SGX2 with Flexible Launch Control) — see
+[`AZURE_SETUP.md`](AZURE_SETUP.md) for provisioning that VM from scratch.
+It is deliberately deterministic, with the expected output stated for
+every step, so that any failure is easy to isolate as either a code bug
+or a setup problem.
 
 ---
 
-## 1. Pré-requisitos de hardware/SO
+## 1. Hardware / OS prerequisites
 
-- CPU Intel com SGX habilitado na BIOS (geração ≥ Coffee Lake; ideal
-  Ice Lake-SP / DCsv3 com FLC).
-- Linux com drivers in-kernel `/dev/sgx_enclave` e `/dev/sgx_provision`
-  (kernel ≥ 5.11).
-- Utilizador no grupo `sgx_prv`.
-- DCAP infra: `libsgx-dcap-quote-verify-dev`, `libsgx-dcap-default-qpl`,
-  `libsgx-urts`, `libsgx-dcap-ql`.
-- PCCS configurado em `/etc/sgx_default_qcnl.conf` (Azure expõe um por
-  região; on-prem corre-se um local).
-- Gramine 1.9 (para o caminho `gramine_server`).
+- Intel CPU with SGX enabled in the BIOS (Coffee Lake or newer; ideally
+  Ice Lake-SP / DCsv3 with FLC).
+- Linux with the in-kernel drivers `/dev/sgx_enclave` and
+  `/dev/sgx_provision` (kernel ≥ 5.11).
+- User in the `sgx_prv` group.
+- DCAP infrastructure: `libsgx-dcap-quote-verify-dev`,
+  `libsgx-dcap-default-qpl`, `libsgx-urts`, `libsgx-dcap-ql`.
+- A PCCS configured in `/etc/sgx_default_qcnl.conf` (Azure exposes one
+  per region; on-prem you run a local one).
+- Gramine 1.9 (for the `gramine_server` path).
 
-Verificar antes de continuar:
+Verify before going further:
 ```bash
-ls -l /dev/sgx_enclave /dev/sgx_provision   # ambos têm de existir
-groups | grep -E 'sgx_prv'                  # utilizador no grupo
+ls -l /dev/sgx_enclave /dev/sgx_provision   # both must exist
+groups | grep -E 'sgx_prv'                  # user in the group
 dpkg -l | grep -E 'libsgx-dcap|libsgx-urts'
 cat /etc/sgx_default_qcnl.conf | head -5    # PCCS endpoint
 gramine-sgx --version                       # 1.9.x
 ```
 
-Se algum destes falhar, parar aqui — os testes seguintes vão produzir
-erros derivados e dificultar o diagnóstico.
+If any of these fail, stop here — the tests below will produce
+downstream errors and make diagnosis harder.
 
 ## 2. Build
 
 ```bash
-git clone <repo> sahc && cd sahc
+git clone https://github.com/afarturc/sahc-project.git sahc && cd sahc
 source /opt/intel/sgxsdk/environment
 ./scripts/fetch_duckdb.sh
-./scripts/gen_identity.py             # se ainda não existirem em parties/
-./scripts/build_authorized_parties.py
-gramine-sgx-gen-private-key           # se ainda não existir
+for p in hosp-santa-maria hosp-sao-joao hosp-santo-antonio fcup-research; do
+    python3 scripts/gen_identity.py "$p"   # if parties/ is not populated yet
+done
+python3 scripts/build_authorized_parties.py --quorum 2 \
+    --hospital hosp-santa-maria \
+    --hospital hosp-sao-joao \
+    --hospital hosp-santo-antonio \
+    --researcher fcup-research \
+    --signed-by hosp-santa-maria \
+    --signed-by hosp-sao-joao \
+    > authorized_parties.json
+gramine-sgx-gen-private-key           # if you don't have one yet
 
 make clean
-make hw                                # all-in-one: SDK + Gramine + assina + pin Gramine
+make hw                                # all-in-one: SDK + Gramine + signing + Gramine pin
 ```
 
-`make hw` é equivalente a:
+`make hw` is equivalent to:
 ```bash
 make SGX_MODE=HW SAHC_HW=1 gramine_server gramine_manifest_hw
 make SGX_MODE=HW SAHC_HW=1 sgx_server sgx_client
 ```
-e regenera `Include/expected_mrenclave_gramine.h` (extraído de
-`gramine_server.sig`) — é com este pin que o cliente compara em HW.
+and regenerates `Include/expected_mrenclave_gramine.h` (extracted from
+`gramine_server.sig`) — that is the pin the client compares against on
+hardware.
 
-**Esperado:** todos os comandos terminam com exit 0. Para builds
-incrementais durante desenvolvimento, as variantes detalhadas
-continuam a funcionar isoladamente.
+**Expected:** every command exits 0. For incremental builds during
+development, the individual targets still work on their own.
 
-`SAHC_HW=1` activa o switch DCAP:
-- Servidor Gramine lê `/dev/attestation/{user_report_data,quote}` e
-  envia `sgx_quote3_t` real (`PROTO_QUOTE_FORMAT_DCAP=0x01`).
-- Cliente parseia o `sgx_quote3_t`, chama `sgx_qv_verify_quote()` da
-  QvL, valida cadeia + binding `report_data` + MRENCLAVE pin.
+`SAHC_HW=1` flips the DCAP switch:
+- The Gramine server reads `/dev/attestation/{user_report_data,quote}`
+  and sends a real `sgx_quote3_t` (`PROTO_QUOTE_FORMAT_DCAP=0x01`).
+- The client parses the `sgx_quote3_t`, calls the QvL's
+  `sgx_qv_verify_quote()`, and validates the chain, the `report_data`
+  binding and the MRENCLAVE pin.
 
-## 3. Caminho A — SGX-SDK (`sgx_server`)
+## 3. Path A — SGX SDK (`sgx_server`)
 
-### A.1 Sanity MRENCLAVE
+### A.1 MRENCLAVE sanity check
 ```bash
 ./sgx_server --print-mrenclave
 sha256sum Include/expected_mrenclave.h
 ```
-**Esperado:** o hex impresso bate com o array em `expected_mrenclave.h`.
-Se não bater → problema na geração do header.
+**Expected:** the printed hex matches the array in
+`expected_mrenclave.h`. If it doesn't, the header generation is broken.
 
 ### A.2 Run
 ```bash
-rm -f data/sealed/state.bin              # se herdado do SIM
+rm -f data/sealed/state.bin              # if inherited from a SIM run
 ./sgx_server 127.0.0.1 7878 &
 ./sgx_client 127.0.0.1 7878 hosp-santa-maria data/hospital_0.csv
 ```
-**Esperado:** sucesso (`Server: state persisted`, `UPLOAD_ACK`).
+**Expected:** success (`Server: state persisted`, `UPLOAD_ACK`).
 
-### A.3 Limitação conhecida
+### A.3 Known limitation
 ```bash
 SAHC_REQUIRE_DCAP=1 ./sgx_client 127.0.0.1 7878 hosp-santa-maria data/hospital_0.csv
 ```
-**Esperado: falha**. Razão: o `sgx_server` (caminho SDK) emite o quote
-artesanal SAHC mesmo em HW; passar a DCAP real exigiria
-`sgx_qe_get_quote()` dentro do enclave — fora do escopo desta
-entrega. **Não é regressão.** O caminho que faz DCAP real é o
-**Gramine** (§4).
+**Expected: failure.** Reason: `sgx_server` (the SDK path) emits the
+hand-rolled SAHC quote even in a HW build; moving it to real DCAP would
+require `sgx_qe_get_quote()` inside the enclave, which was out of scope
+for this deliverable. **This is not a regression.** The path that does
+real DCAP is **Gramine** (§4).
 
-## 4. Caminho B — Gramine-SGX (`gramine_server`) *(o teste principal)*
+## 4. Path B — Gramine-SGX (`gramine_server`) *(the main test)*
 
 ### B.1 Bring-up
 
-Apagar sealed blob herdado do SIM/SDK (formato incompatível):
+Delete any sealed blob inherited from the SIM/SDK path (incompatible
+format):
 ```bash
 rm -f data/sealed/state.bin
 gramine-sgx gramine_server 127.0.0.1 7878
 ```
 
-**Esperado:** `parties loaded — 3 hospitals, 1 researchers`. Sem
-warnings sobre `/dev/attestation absent` (esses só aparecem em
+**Expected:** `parties loaded — 3 hospitals, 1 researchers`, with no
+`/dev/attestation absent` warnings (those only appear under
 `gramine-direct`).
 
-### B.2 Upload + query com DCAP forçado
+### B.2 Upload and query with DCAP forced
 
 ```bash
 SAHC_REQUIRE_DCAP=1 ./sgx_client 127.0.0.1 7878 hosp-santa-maria   data/hospital_0.csv
@@ -117,105 +132,109 @@ SAHC_REQUIRE_DCAP=1 ./sgx_client 127.0.0.1 7878 hosp-santo-antonio data/hospital
 SAHC_REQUIRE_DCAP=1 ./sgx_client 127.0.0.1 7878 fcup-research - age avg any
 ```
 
-**Esperado para CADA cliente:**
+**Expected from EACH client:**
 ```
 Client: ATTEST_RESP received (...) bytes
 quote_verify: DCAP chain OK + binding OK + MRENCLAVE pin OK
 Server: state persisted
 ```
 
-**Servidor imprime:**
+**The server prints:**
 ```
-DCAP: quote read OK (~4096 bytes)         # tamanho exacto varia
+DCAP: quote read OK (~4096 bytes)         # exact size varies
 ```
 
-**Query final:** `result=49.143 matched=15 applied_k=5` (igual ao SIM,
-mas com o caminho DCAP a sério por baixo).
+**Final query:** `result=49.143 matched=14 applied_k=5` — the same as in
+SIM, but with the real DCAP path underneath.
 
-### B.3 Falhas de propósito (validar enforcement)
+### B.3 Deliberate failures (enforcement checks)
 
-MRENCLAVE errado deve recusar:
+A wrong MRENCLAVE must be refused:
 ```bash
 SAHC_EXPECTED_MRENCLAVE=$(printf 'aa%.0s' {1..32}) \
 SAHC_REQUIRE_DCAP=1 ./sgx_client 127.0.0.1 7878 fcup-research - age avg any
 ```
-**Esperado:** `quote_verify: MRENCLAVE mismatch vs env override`.
+**Expected:** `quote_verify: MRENCLAVE mismatch vs env override`.
 
-Cliente sem `SAHC_HW=1` contra servidor HW deve recusar (anti-downgrade):
+A client built without `SAHC_HW=1` must refuse a HW server
+(anti-downgrade):
 ```bash
-# rebuild client without SAHC_HW=1 first
+# rebuild the client without SAHC_HW=1 first
 SAHC_REQUIRE_DCAP=1 ./sgx_client 127.0.0.1 7878 fcup-research - age avg any
 ```
-**Esperado:** `quote_verify: DCAP format received (qlen=...) but this
+**Expected:** `quote_verify: DCAP format received (qlen=...) but this
 build does not include the DCAP verifier — Refusing.`
 
-### B.4 K-anonymity
+### B.4 k-anonymity
+Every diagnosis in the sample set has fewer than 5 records, so any
+filtered query is refused:
 ```bash
-SAHC_REQUIRE_DCAP=1 ./sgx_client 127.0.0.1 7878 fcup-research - age avg pneumonia
+SAHC_REQUIRE_DCAP=1 ./sgx_client 127.0.0.1 7878 fcup-research - blood_sugar avg diabetes
 ```
-**Esperado:** `E_INSUFFICIENT_RECORDS` se < 5 matches.
+**Expected:** `query: refused — below k-anonymity threshold`
+(`E_INSUFFICIENT_RECORDS`), with no aggregate and no count returned.
 
-### B.5 Persistência
+### B.5 Persistence
 
-Matar o servidor (Ctrl-C), re-arrancar **sem** apagar nada:
+Kill the server (Ctrl-C) and restart it **without** deleting anything:
 ```bash
 gramine-sgx gramine_server 127.0.0.1 7878
 SAHC_REQUIRE_DCAP=1 ./sgx_client 127.0.0.1 7878 fcup-research - age avg any
 ```
-**Esperado:** servidor imprime `Server: state loaded from sealed blob`;
-query devolve o mesmo `49.143` sem precisar de re-upload. Se o blob
-não desselar é regressão — a sealing key derivada de
-`/dev/attestation/keys/_sgx_mrenclave` é o ponto crítico para
-sobreviver a restart.
+**Expected:** the server prints `Server: state loaded from sealed blob`
+and the query returns the same `49.143` with no re-upload. A blob that
+fails to unseal is a regression — the sealing key derived from
+`/dev/attestation/keys/_sgx_mrenclave` is the critical piece for
+surviving a restart.
 
-## 5. Diferenças efectivas direct → sgx
+## 5. What actually changes from direct to sgx
 
-| Aspecto                   | gramine-direct (dev)            | gramine-sgx (HW)                                   |
-|---------------------------|---------------------------------|----------------------------------------------------|
-| MRENCLAVE / MRSIGNER      | placeholder `0xDE`*32           | real via `/dev/attestation/{mrenclave,mrsigner}`   |
-| Sealing key               | fixa DEV-ONLY (warning loud)    | PSW-derivada via `/dev/attestation/keys/_sgx_mrenclave` |
-| Quote                     | stub (não verificável)          | DCAP real (`sgx.remote_attestation = "dcap"`)       |
-| `SAHC_REQUIRE_DCAP`       | tem de ser 0 / unset            | **1** (recusa-se a correr sem DCAP)                |
-| `SAHC_EXPECTED_MRENCLAVE` | tem de ser `''` (pin não bate)  | unset (cliente pina contra `.sig` do build HW)     |
-| Sealed blob compatível?   | só direct ↔ direct              | só sgx ↔ sgx (apagar `data/sealed/state.bin`)      |
+| Aspect                    | gramine-direct (dev)            | gramine-sgx (HW)                                        |
+|---------------------------|---------------------------------|---------------------------------------------------------|
+| MRENCLAVE / MRSIGNER      | placeholder `0xDE`*32           | real, via `/dev/attestation/{mrenclave,mrsigner}`       |
+| Sealing key               | fixed DEV-ONLY (loud warning)   | PSW-derived via `/dev/attestation/keys/_sgx_mrenclave`  |
+| Quote                     | stub (not verifiable)           | real DCAP (`sgx.remote_attestation = "dcap"`)           |
+| `SAHC_REQUIRE_DCAP`       | must be 0 / unset               | **1** (refuses to run without DCAP)                     |
+| `SAHC_EXPECTED_MRENCLAVE` | must be `''` (the pin can't match) | unset (client pins against the HW build's `.sig`)    |
+| Sealed blob compatible?   | direct ↔ direct only            | sgx ↔ sgx only (delete `data/sealed/state.bin`)         |
 
-## 6. Bench
+## 6. Benchmarks
 ```bash
 make sgx_bench
 rm -f data/sealed/state.bin
 gramine-sgx gramine_server 127.0.0.1 7878 &
 SAHC_REQUIRE_DCAP=1 ./sgx_bench > bench-hw.md
 ```
-Output: handshake p50/p95/p99, upload throughput por batch, query
-latency. Comparar com `bench-sim.md` para quantificar overhead
-DCAP + EPC.
+Output: handshake p50/p95/p99, upload throughput per batch size, query
+latency. Compare against `bench-sim.md` to quantify the DCAP + EPC
+overhead.
 
-## 7. Diagnóstico de falhas
+## 7. Diagnosing a failure
 
-Quando um teste falha, recolher:
-1. Comando exacto.
-2. Output completo do cliente e do servidor (stdout + stderr).
-3. `dmesg | tail -50` se houver suspeita de driver SGX.
-4. `cat /etc/sgx_default_qcnl.conf` (sem secrets).
-5. Versões: `gramine-sgx --version`, `dpkg -l | grep sgx`.
+When a test fails, collect:
+1. The exact command.
+2. Full client and server output (stdout + stderr).
+3. `dmesg | tail -50` if the SGX driver is suspect.
+4. `cat /etc/sgx_default_qcnl.conf` (no secrets in it).
+5. Versions: `gramine-sgx --version`, `dpkg -l | grep sgx`.
 
-## 8. Tolerância a falhas
+## 8. Fault tolerance
 
-Ver a secção "Tolerância a falhas" do relatório final
-([`../report/main.pdf`](../report/main.pdf)): cobre recuperação de queda
-(sealed state + restart), rotação de chaves comprometidas, comportamento
-sob TCP timeout, decrypt failure e k-anon insuficiente.
+See the "Tolerância a falhas" section of the final report
+([`../report/main.pdf`](../report/main.pdf)): crash recovery (sealed
+state + restart), rotation of compromised keys, and behaviour under TCP
+timeout, decrypt failure and insufficient k-anonymity.
 
 ## 9. Troubleshooting
 
-| Sintoma                                                | Causa / Solução                                              |
-|--------------------------------------------------------|--------------------------------------------------------------|
-| `aesm_service` / `SGX_ERROR_NO_DEVICE`                 | drivers in-kernel ausentes ou utilizador sem grupo `sgx_prv` |
-| `gramine-sgx: enclave-key.pem not found`               | correr `gramine-sgx-gen-private-key` uma vez                 |
-| `quote_verify: MRENCLAVE mismatch`                     | binário recompilado sem `make clean`, ou mistura SIM/HW      |
-| `unseal failed` ao arrancar                            | trocou-se de backend → `rm data/sealed/state.bin`            |
-| `sgx_qv_verify_quote 0x...A001` (NO_QPL)               | falta `libsgx-dcap-default-qpl`                              |
-| `sgx_qv_verify_quote 0x...A002` (CRL_UNAVAILABLE)      | PCCS unreachable / `qcnl.conf` errado                        |
-| `qv_result rejected 0xA006` (OUT_OF_DATE)              | TCB do CPU desactualizado — fazer microcode update           |
-| `qv_result rejected 0xA00C` (REVOKED)                  | PCK revogada — máquina banida do TCB                         |
-| `DCAP report_data binding mismatch`                    | bug de código — capturar hexdump do quote para diagnóstico   |
+| Symptom                                                | Cause / fix                                                     |
+|--------------------------------------------------------|-----------------------------------------------------------------|
+| `aesm_service` / `SGX_ERROR_NO_DEVICE`                 | in-kernel drivers missing, or user not in the `sgx_prv` group   |
+| `gramine-sgx: enclave-key.pem not found`               | run `gramine-sgx-gen-private-key` once                          |
+| `quote_verify: MRENCLAVE mismatch`                     | binary rebuilt without `make clean`, or SIM/HW mixed            |
+| `unseal failed` on start                               | the backend was switched → `rm data/sealed/state.bin`           |
+| `sgx_qv_verify_quote 0x...A001` (NO_QPL)               | `libsgx-dcap-default-qpl` missing                               |
+| `sgx_qv_verify_quote 0x...A002` (CRL_UNAVAILABLE)      | PCCS unreachable / wrong `qcnl.conf`                            |
+| `qv_result rejected 0xA006` (OUT_OF_DATE)              | CPU TCB out of date — apply a microcode update                  |
+| `qv_result rejected 0xA00C` (REVOKED)                  | PCK revoked — the machine is banned from the TCB                |
+| `DCAP report_data binding mismatch`                    | a code bug — capture a hexdump of the quote for diagnosis       |
