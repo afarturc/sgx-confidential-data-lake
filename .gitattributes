@@ -1,0 +1,10 @@
+# Vendored third-party sources — excluded from GitHub's language stats.
+Common/third_party/** linguist-vendored
+
+# The LaTeX report and its artifacts are documentation, not source.
+report/**            linguist-documentation
+docs/**              linguist-documentation
+
+# Keep binary assets out of diffs.
+*.pdf                binary
+*.png                binary
