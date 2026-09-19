@@ -30,5 +30,5 @@ keywords:
   - dcap
   - gramine
 license: MIT
-repository-code: "https://github.com/afarturc/sahc-project"
+repository-code: "https://github.com/afarturc/sgx-confidential-data-lake"
 year: 2026

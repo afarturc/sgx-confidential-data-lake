@@ -41,7 +41,7 @@ downstream errors and make diagnosis harder.
 ## 2. Build
 
 ```bash
-git clone https://github.com/afarturc/sahc-project.git sahc && cd sahc
+git clone https://github.com/afarturc/sgx-confidential-data-lake.git sahc && cd sahc
 source /opt/intel/sgxsdk/environment
 ./scripts/fetch_duckdb.sh
 for p in hosp-santa-maria hosp-sao-joao hosp-santo-antonio fcup-research; do

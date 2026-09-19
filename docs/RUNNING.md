@@ -36,7 +36,7 @@ gramine-direct --version              # any 1.9.x
 ## 2. Clone and first-time setup
 
 ```bash
-git clone https://github.com/afarturc/sahc-project.git sahc && cd sahc
+git clone https://github.com/afarturc/sgx-confidential-data-lake.git sahc && cd sahc
 source /opt/intel/sgxsdk/environment
 
 # DuckDB (~57 MB, lands in Common/third_party/duckdb/, gitignored)

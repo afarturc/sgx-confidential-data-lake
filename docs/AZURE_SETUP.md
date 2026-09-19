@@ -116,7 +116,7 @@ groups | grep sgx_prv
 ## 6. Get the repository onto the VM
 
 ```
-git clone https://github.com/afarturc/sahc-project.git ~/sahc
+git clone https://github.com/afarturc/sgx-confidential-data-lake.git ~/sahc
 ```
 
 To push local work in progress instead of cloning, rsync from your
